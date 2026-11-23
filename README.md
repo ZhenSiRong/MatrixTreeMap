@@ -12,6 +12,24 @@ Zed 的伴随窗口：把仓库画成**矩形树图**，看体积、看热点、
 
 > 为什么不是 Zed 扩展：Zed 的扩展 API 只提供 language / debugger / theme / icon theme / snippets / MCP server / agent server，**没有任何 UI 能力**（官方讨论也明确说近期没有计划扩展视觉能力）。所以侧栏面板做不了，只能做一个伴随窗口。
 
+## 旅程录像
+
+三条片子都是**真实输入**：CDP 发 `mousePressed / mouseMoved / mouseReleased / mouseWheel`，不是截图拼接。
+
+**① 导航**：悬停看数据 → 单击折叠 → 双击下钻 → 点面包屑回退
+
+![导航旅程：悬停 / 折叠 / 下钻 / 面包屑回退](docs/demo-navigate.gif)
+
+**② 缩放与平移**：滚轮以光标为中心缩放、拖动平移（位移超过 5px 不算点击）
+
+![缩放与平移](docs/demo-zoom.gif)
+
+**③ 窄屏**：工具栏恒一行，参数收进 ⚙ 弹层
+
+![窄屏下的 ⚙ 弹层](docs/demo-narrow.gif)
+
+MP4 版本在同目录（`demo-*.mp4`），要转发或放 PPT 时用它们，比 GIF 清晰得多。
+
 ## 用法
 
 ```bash
