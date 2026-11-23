@@ -97,6 +97,65 @@ const SCENARIOS = {
     ],
   },
 
+  /** 旅程四：悬停看数据 */
+  'hover': {
+    url: 'http://127.0.0.1:4477/',
+    viewport: { width: 1280, height: 800 },
+    steps: [
+      { wait: 2600 },
+      { shot: '01-idle', caption: '① 初始：每个块是一个目录或文件', hold: 1600 },
+      { move: [1050, 200] },
+      { wait: 450 },
+      { shot: '02-hover-a', caption: '② 悬停小文件：路径 + 行数 + churn', hold: 1700 },
+      { move: [980, 520] },
+      { wait: 450 },
+      { shot: '03-hover-b', caption: '③ 换个块，数据跟着换', hold: 1700 },
+      { move: [420, 260] },
+      { wait: 900 },
+      { shot: '04-hover-big', caption: '④ 悬停大目录：会标出「已折叠」与阈值', hold: 1800 },
+    ],
+  },
+
+  /** 旅程五：折叠 / 展开 */
+  'expand-collapse': {
+    url: 'http://127.0.0.1:4477/#design',
+    viewport: { width: 1280, height: 800 },
+    steps: [
+      { wait: 2600 },
+      { shot: '01-before', caption: '① 展开态：大目录内部铺开成子块', hold: 1600 },
+      { click: [430, 320] },
+      { wait: 600 },
+      { shot: '02-folded', caption: '② 单击折叠成一块，×倍率标出被压掉多少', hold: 1800 },
+      { click: [430, 320] },
+      { wait: 600 },
+      { shot: '03-expanded', caption: '③ 再点还原：内部结构回来', hold: 1800 },
+      { click: [430, 320] },
+      { wait: 1500 },
+      { shot: '04-folded-again', caption: '④ 折叠态稳定：面积不变，内部收起', hold: 1600 },
+    ],
+  },
+
+  /** 旅程六：面包屑逐级回退 */
+  'breadcrumb': {
+    url: 'http://127.0.0.1:4477/',
+    viewport: { width: 1280, height: 800 },
+    steps: [
+      { wait: 2600 },
+      { dblclick: [430, 320] },
+      { wait: 800 },
+      { shot: '01-level1', caption: '① 双击下钻：面包屑出现第一级', hold: 1700 },
+      { dblclick: [300, 300] },
+      { wait: 800 },
+      { shot: '02-level2', caption: '② 再下钻一层：面包屑变成三段', hold: 1700 },
+      { click: [95, 78] },
+      { wait: 700 },
+      { shot: '03-back1', caption: '③ 点中间那段：回到上一级，不是直接回根', hold: 1700 },
+      { click: [45, 78] },
+      { wait: 700 },
+      { shot: '04-back-root', caption: '④ 点「根目录」：整棵树回来', hold: 1600 },
+    ],
+  },
+
   /** 旅程三：窄屏 ⚙ 弹层 */
   'narrow': {
     url: 'http://127.0.0.1:4477/#design',
