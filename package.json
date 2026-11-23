@@ -1,0 +1,10 @@
+{
+  "name": "matrix-treemap",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Companion treemap window for Zed: area = lines, colour = churn density, big folders auto-fold.",
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}

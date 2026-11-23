@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<title>Zed 矩形树图</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #0b0f14; overflow: hidden;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #c9d1d9; }
+  canvas { display: block; width: 100vw; height: 100vh; cursor: grab; }
+  #bar { position: fixed; left: 12px; top: 12px; right: 12px; display: flex; gap: 10px 14px;
+    align-items: center; flex-wrap: wrap; padding: 8px 12px; background: #161b22e6;
+    border: 1px solid #30363d; border-radius: 8px; backdrop-filter: blur(6px); }
+  #settings { display: flex; align-items: center; gap: 10px; }
+  #settings input { width: 78px; background: #0d1117; color: #c9d1d9; border: 1px solid #30363d;
+    border-radius: 4px; padding: 2px 6px; font: inherit; }
+  #gear { display: none; }
+  #bar > * { flex: 0 0 auto; white-space: nowrap; }
+  #bar label { display: inline-flex; align-items: center; gap: 6px; }
+  #bar button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px;
+    padding: 3px 9px; font: inherit; cursor: pointer; }
+  #bar button:hover { background: #30363d; }
+  #bar .sep { width: 1px; height: 18px; background: #30363d; }
+  @media (max-width: 760px) {
+    #path { display: none; }
+    #gear { display: inline-block; }
+    #settings { position: absolute; top: calc(100% + 6px); right: 8px; display: none;
+      flex-direction: column; align-items: stretch; gap: 8px; padding: 10px 12px; min-width: 210px;
+      background: #161b22f7; border: 1px solid #30363d; border-radius: 8px;
+      box-shadow: 0 10px 28px #000000aa; }
+    #bar.open #settings { display: flex; }
+    #settings label { justify-content: space-between; }
+  }
+  @media (max-width: 560px) { #stats { display: none; } #bar .sep { display: none; } }
+  #path { max-width: 46vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8b949e; }
+  #tip { position: fixed; pointer-events: none; padding: 6px 9px; background: #161b22f2;
+    border: 1px solid #30363d; border-radius: 6px; display: none; max-width: 60vw; white-space: pre; }
+  #legend { position: fixed; right: 12px; bottom: 12px; display: flex; gap: 8px; align-items: center;
+    padding: 6px 10px; background: #161b22cc; border: 1px solid #30363d; border-radius: 8px; color: #8b949e; }
+  #legend .ramp { width: 120px; height: 8px; border-radius: 4px;
+    background: linear-gradient(90deg, #2a78c8, #f0a020); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="bar">
+  <button id="back">← 返回上级</button>
+  <span class="sep"></span>
+  <span id="path">/</span>
+  <span class="sep"></span>
+  <div id="settings">
+    <label>折叠 <input id="fold" type="number" value="20000" min="0" step="1000" /></label>
+    <label>上限 <input id="cap" type="number" value="20000" min="1" step="1000" /></label>
+  </div>
+  <button id="gear" title="设置">⚙</button>
+  <span class="sep"></span>
+  <span id="stats">—</span>
+</div>
+<div id="tip"></div>
+<div id="legend"><span>churn</span><span>冷</span><span class="ramp"></span><span>热</span></div>
+
+<script type="module">
+const canvas = document.getElementById('c')
+const ctx = canvas.getContext('2d')
+const tip = document.getElementById('tip')
+const pathEl = document.getElementById('path')
+const statsEl = document.getElementById('stats')
+const foldInput = document.getElementById('fold')
+
+let state = { tree: null, churnAt: 0, rootPath: '' }
+let drillPath = ''
+let expanded = new Set()
+let foldMin = 20000
+let areaCap = 20000
+let layout = []          // 扁平命中表
+let crumbs = []          // 画布内的层级块（命中表）
+let view = { x: 0, y: 0, scale: 1, center: true }
+const barEl = document.getElementById('bar')
+const gearEl = document.getElementById('gear')
+gearEl.addEventListener('click', (ev) => { ev.stopPropagation(); barEl.classList.toggle('open') })
+document.addEventListener('click', (ev) => { if (!barEl.contains(ev.target)) barEl.classList.remove('open') })
+const topInset = () => Math.ceil(barEl.getBoundingClientRect().bottom) + 10
+const WORLD_W = 1000
+const WORLD_H = () => (1000 * innerHeight) / Math.max(1, innerWidth)
+
+// ---------- squarified ----------
+
+const worst = (row, sum, side) => {
+  let w = 0
+  for (const r of row) {
+    const a = r.area
+    w = Math.max(w, Math.max((side * side * a) / (sum * sum), (sum * sum) / (side * side * a)))
+  }
+  return w
+}
+
+function squarify(items, x, y, w, h, out) {
+  if (items.length === 0 || w <= 0 || h <= 0) return
+  const total = items.reduce((s, i) => s + i.value, 0)
+  if (total <= 0) return
+  const scale = (w * h) / total
+  const scaled = items.map(i => ({ ...i, area: i.value * scale }))
+
+  let i = 0, cx = x, cy = y, cw = w, ch = h
+  while (i < scaled.length && cw > 0.0001 && ch > 0.0001) {
+    const side = Math.min(cw, ch)
+    let end = i, sum = 0, best = Infinity
+    for (let j = i; j < scaled.length; j += 1) {
+      const trial = scaled.slice(i, j + 1)
+      const s = sum + scaled[j].area
+      const w2 = worst(trial, s, side)
+      if (w2 > best) break
+      best = w2; sum = s; end = j
+    }
+    const row = scaled.slice(i, end + 1)
+    const rowSum = row.reduce((s, r) => s + r.area, 0)
+    if (rowSum <= 0) break
+    if (cw >= ch) {
+      const depth = rowSum / ch
+      let ry = cy
+      for (const r of row) {
+        const rh = (r.area / rowSum) * ch
+        out.push({ ...r, x: cx, y: ry, w: depth, h: rh })
+        ry += rh
+      }
+      cx += depth; cw -= depth
+    } else {
+      const depth = rowSum / cw
+      let rx = cx
+      for (const r of row) {
+        const rw = (r.area / rowSum) * cw
+        out.push({ ...r, x: rx, y: cy, w: rw, h: depth })
+        rx += rw
+      }
+      cy += depth; ch -= depth
+    }
+    i = end + 1
+  }
+}
+
+// ---------- 树 → 可布局项 ----------
+
+function findNode(path) {
+  const tree = state.tree
+  if (!tree) return null
+  if (path === '') return tree
+  let node = tree
+  for (const seg of path.split('/')) {
+    const next = (node.children ?? []).find(c => c.type === 'dir' && c.name === seg)
+    if (!next) return null
+    node = next
+  }
+  return node
+}
+
+function buildLayout() {
+  layout = []
+  const node = findNode(drillPath)
+  if (!node) return
+  const items = (node.children ?? []).map(child => {
+    const folded = child.type === 'dir' && !expanded.has(child.path) && child.lines >= foldMin
+    return {
+      value: Math.min(child.lines, areaCap),
+      node: child,
+      path: child.path,
+      folded,
+      capped: child.lines > areaCap,
+      kind: child.type,
+    }
+  }).filter(i => i.value > 0)
+
+  const placed = []
+  squarify(items, 0, 0, WORLD_W, WORLD_H(), placed)
+  for (const cell of placed) {
+    layout.push({ ...cell, depth: 0 })
+    if (cell.kind === 'dir' && !cell.folded && cell.w > 40 && cell.h > 40) {
+      const inner = (cell.node.children ?? []).map(child => ({
+        value: Math.min(child.lines, areaCap),
+        node: child,
+        path: child.path,
+        folded: child.type === 'dir' && !expanded.has(child.path) && child.lines >= foldMin,
+        capped: child.lines > areaCap,
+        kind: child.type,
+      })).filter(i => i.value > 0)
+      const pad = 2
+      const placedInner = []
+      squarify(inner, cell.x + pad, cell.y + pad, Math.max(1, cell.w - pad * 2), Math.max(1, cell.h - pad * 2), placedInner)
+      for (const sub of placedInner) layout.push({ ...sub, depth: 1 })
+    }
+  }
+}
+
+// ---------- 绘制 ----------
+
+const densityOf = (node) => (node.lines > 0 ? (node.churn ?? 0) / node.lines * 1000 : 0)
+
+const heat = (churn, max) => {
+  const t = max <= 0 ? 0 : Math.min(1, Math.log1p(churn) / Math.log1p(max))
+  const hue = 210 - 190 * t          // 蓝 → 橙
+  const sat = 55 + 25 * t
+  const light = 42 + 18 * t
+  return `hsl(${hue} ${sat}% ${light}%)`
+}
+
+function maxDensity() {
+  let m = 0
+  const walk = (n) => {
+    if (n.type === 'file') m = Math.max(m, densityOf(n))
+    else (n.children ?? []).forEach(walk)
+  }
+  if (state.tree) walk(state.tree)
+  return m
+}
+
+function draw() {
+  const dpr = devicePixelRatio || 1
+  canvas.width = innerWidth * dpr
+  canvas.height = innerHeight * dpr
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  ctx.clearRect(0, 0, innerWidth, innerHeight)
+  ctx.fillStyle = '#0b0f14'
+  ctx.fillRect(0, 0, innerWidth, innerHeight)
+
+  const k = (innerWidth / WORLD_W) * view.scale
+  const kk = k
+  const offX = view.center ? (innerWidth - WORLD_W * kk) / 2 : view.x
+  const offY = (view.center ? (innerHeight - topInset() - WORLD_H() * kk) / 2 : view.y) + topInset()
+  ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * offX, dpr * offY)
+
+  const max = maxDensity()
+  const labels = []
+  for (const cell of layout) {
+    const isDir = cell.kind === 'dir'
+    ctx.fillStyle = heat(densityOf(cell.node), max)
+    ctx.globalAlpha = cell.folded ? 0.92 : isDir ? 0.55 : 0.95
+    ctx.fillRect(cell.x, cell.y, cell.w, cell.h)
+    ctx.globalAlpha = 1
+    ctx.strokeStyle = '#0b0f14'
+    ctx.lineWidth = (cell.depth === 0 ? 1.2 : 0.6) / k
+    ctx.strokeRect(cell.x, cell.y, cell.w, cell.h)
+
+    // 标签推迟到第二遍：孩子的填充会盖住父格标签
+    if (cell.w * k > 46 && cell.h * k > 13) {
+      const name = cell.node.name + (cell.folded ? ' ▸' : '')
+      const px = 11 / k
+      const label = cell.w * k > 120 ? name : name.slice(0, Math.max(3, Math.floor(cell.w * k / (px * 0.62))))
+      labels.push({ cell, label, px, isDir: cell.kind === 'dir' })
+    }
+  }
+
+  // 第二遍：先画子级标签，再画父级（越靠上越晚画，保证目录名不被覆盖）
+  labels.sort((a, b) => b.cell.depth - a.cell.depth)
+  for (const { cell, label, px, isDir } of labels) {
+    ctx.save()
+    ctx.beginPath(); ctx.rect(cell.x, cell.y, cell.w, cell.h); ctx.clip()
+    ctx.font = `${px}px ui-monospace, monospace`
+    ctx.textBaseline = 'top'
+    const tx = cell.x + 3 / k
+    const ty = cell.y + 3 / k
+    if (isDir) {
+      // 目录标签画成整条头部栏：既压住孩子在同一条边上的标签，也划出容器的边界
+      ctx.fillStyle = 'rgba(11,15,20,0.82)'
+      ctx.fillRect(cell.x, cell.y, cell.w, px * 1.45)
+      ctx.fillStyle = '#e6edf3'
+    } else {
+      ctx.fillStyle = '#0b0f14'
+    }
+    ctx.fillText(label, tx, ty)
+    if (cell.capped && cell.h * k > 30) {
+      ctx.fillStyle = 'rgba(11,15,20,0.85)'
+      ctx.fillText(`×${(cell.node.lines / foldMin).toFixed(1)}`, tx, ty + px * 1.15)
+    }
+    ctx.restore()
+  }
+
+  // 面包屑：把层级画成可点的块，掉到哪一层点哪个块就能回去
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  crumbs = []
+  const segs = drillPath === '' ? [] : drillPath.split('/')
+  const chain = [{ label: '⌂ 根目录', path: '' }]
+  segs.forEach((seg, i) => chain.push({ label: seg, path: segs.slice(0, i + 1).join('/') }))
+
+  let cx = 12
+  const cy = Math.ceil(barEl.getBoundingClientRect().bottom) + 8
+  ctx.font = '12px ui-monospace, monospace'
+  ctx.textBaseline = 'middle'
+  for (let i = 0; i < chain.length; i += 1) {
+    const { label, path } = chain[i]
+    const text = label.length > 22 ? `${label.slice(0, 21)}…` : label
+    const w = ctx.measureText(text).width + 16
+    const h = 24
+    const active = path === drillPath
+    ctx.fillStyle = active ? '#1f6feb55' : '#161b22dd'
+    ctx.strokeStyle = active ? '#1f6feb' : '#30363d'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.roundRect(cx, cy, w, h, 6)
+    ctx.fill(); ctx.stroke()
+    ctx.fillStyle = active ? '#cfe3ff' : '#c9d1d9'
+    ctx.fillText(text, cx + 8, cy + h / 2 + 0.5)
+    crumbs.push({ x: cx, y: cy, w, h, path })
+    cx += w + 6
+    if (i < chain.length - 1) {
+      ctx.fillStyle = '#484f58'
+      ctx.fillText('›', cx - 2, cy + h / 2)
+      cx += 10
+    }
+  }
+
+  pathEl.textContent = `/${drillPath}`
+  statsEl.textContent = `${layout.filter(c => c.kind === 'file').length} 文件格 · 折叠 ${layout.filter(c => c.folded).length}`
+}
+
+// ---------- 交互 ----------
+
+const toWorld = (clientX, clientY) => {
+  const k = (innerWidth / WORLD_W) * view.scale
+  const offX = view.center ? (innerWidth - WORLD_W * k) / 2 : view.x
+  const offY = (view.center ? (innerHeight - topInset() - WORLD_H() * k) / 2 : view.y) + topInset()
+  return { x: (clientX - offX) / k, y: (clientY - offY) / k, k }
+}
+
+function hit(wx, wy) {
+  let best = null
+  for (const cell of layout) {
+    if (wx >= cell.x && wx <= cell.x + cell.w && wy >= cell.y && wy <= cell.y + cell.h) {
+      if (!best || cell.depth > best.depth) best = cell
+    }
+  }
+  return best
+}
+
+canvas.addEventListener('mousemove', (ev) => {
+  const { x, y } = toWorld(ev.clientX, ev.clientY)
+  const cell = hit(x, y)
+  if (!dragging) canvas.style.cursor = cell ? 'pointer' : 'grab'
+  if (!cell) { tip.style.display = 'none'; return }
+  tip.style.display = 'block'
+  tip.style.left = `${Math.min(ev.clientX + 14, innerWidth - 380)}px`
+  tip.style.top = `${ev.clientY + 14}px`
+  tip.textContent = `${cell.path}\n${cell.node.lines.toLocaleString()} 行 · churn ${cell.node.churn ?? 0}`
+    + (cell.folded ? `\n已折叠（≥${foldMin.toLocaleString()} 行），单击展开` : '')
+})
+
+function activateAt(clientX, clientY) {
+  for (const crumb of crumbs) {
+    if (clientX >= crumb.x && clientX <= crumb.x + crumb.w
+      && clientY >= crumb.y && clientY <= crumb.y + crumb.h) {
+      drillPath = crumb.path
+      expanded.delete(drillPath)
+      buildLayout(); draw(); persist()
+      window.__lastAction = { kind: 'crumb', path: crumb.path }
+      return
+    }
+  }
+  const { x, y } = toWorld(clientX, clientY)
+  const cell = hit(x, y)
+  if (!cell) { window.__lastAction = { kind: 'none' }; return }
+  if (cell.kind === 'file') {
+    fetch('/api/open', { method: 'POST', body: JSON.stringify({ path: cell.path }) })
+    window.__lastAction = { kind: 'open', path: cell.path }
+    return
+  }
+  if (cell.folded) expanded.add(cell.path)
+  else expanded.delete(cell.path)
+  buildLayout(); draw()
+  window.__lastAction = { kind: 'fold', path: cell.path, folded: cell.folded }
+}
+
+canvas.addEventListener('dblclick', (ev) => {
+  const { x, y } = toWorld(ev.clientX, ev.clientY)
+  const cell = hit(x, y)
+  if (cell && cell.kind === 'dir') {
+    drillPath = cell.path
+    expanded.delete(drillPath)
+    buildLayout(); draw(); persist()
+  }
+})
+
+document.getElementById('back').addEventListener('click', () => {
+  if (!drillPath) return
+  drillPath = drillPath.includes('/') ? drillPath.slice(0, drillPath.lastIndexOf('/')) : ''
+  buildLayout(); draw()
+})
+
+const persist = () => {
+  try { localStorage.setItem('treemap:prefs', JSON.stringify({ foldMin, areaCap, drillPath })) } catch { /* 隐私模式 */ }
+}
+
+foldInput.addEventListener('change', () => {
+  foldMin = Math.max(0, Number(foldInput.value) || 0)
+  buildLayout(); draw(); persist()
+})
+
+document.getElementById('cap').addEventListener('change', (ev) => {
+  areaCap = Math.max(1, Number(ev.target.value) || 1)
+  buildLayout(); draw(); persist()
+})
+
+canvas.addEventListener('wheel', (ev) => {
+  ev.preventDefault()
+  const factor = Math.exp(-ev.deltaY * 0.0012)
+  const before = toWorld(ev.clientX, ev.clientY)
+  view.center = false
+  view.scale = Math.min(60, Math.max(0.25, view.scale * factor))
+  const after = toWorld(ev.clientX, ev.clientY)
+  const k = (innerWidth / WORLD_W) * view.scale
+  view.x += (after.x - before.x) * k
+  view.y += (after.y - before.y) * k
+  draw()
+}, { passive: false })
+
+let dragging = null
+const DRAG_SLOP = 5      // 超过这个位移就算拖动，不再触发点击动作
+
+canvas.addEventListener('mousedown', (ev) => {
+  if (ev.button !== 0) return
+  view.center = false
+  dragging = { x: ev.clientX, y: ev.clientY, vx: view.x, vy: view.y, moved: false }
+  canvas.style.cursor = 'grabbing'
+})
+
+addEventListener('mousemove', (ev) => {
+  if (!dragging) return
+  const dx = ev.clientX - dragging.x
+  const dy = ev.clientY - dragging.y
+  if (!dragging.moved && Math.hypot(dx, dy) > DRAG_SLOP) dragging.moved = true
+  if (dragging.moved) {
+    view.x = dragging.vx + dx
+    view.y = dragging.vy + dy
+    draw()
+  }
+})
+
+addEventListener('mouseup', (ev) => {
+  if (!dragging) return
+  const wasDrag = dragging.moved
+  const { clientX, clientY } = { clientX: ev.clientX, clientY: ev.clientY }
+  dragging = null
+  canvas.style.cursor = 'grab'
+  if (!wasDrag) activateAt(clientX, clientY)   // 只有"没动过"的一次按下-抬起才算点击
+})
+
+addEventListener('resize', () => { buildLayout(); draw() })
+new ResizeObserver(() => { buildLayout(); draw() }).observe(barEl)
+
+addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') barEl.classList.remove('open')
+  if (ev.key !== 'Escape' && ev.key !== 'Backspace') return
+  if (!drillPath) return
+  ev.preventDefault()
+  drillPath = drillPath.includes('/') ? drillPath.slice(0, drillPath.lastIndexOf('/')) : ''
+  buildLayout(); draw()
+})
+
+// ---------- 数据 ----------
+
+function applyState(next) {
+  state = { tree: next.tree, churnAt: next.churnAt, rootPath: next.root }
+  if (!window.__hashApplied) {
+    window.__hashApplied = true
+    const h = decodeURIComponent(location.hash.slice(1))
+    if (h) drillPath = h
+    else {
+      try {
+        const saved = JSON.parse(localStorage.getItem('treemap:prefs') ?? 'null')
+        if (saved && typeof saved === 'object') {
+          if (Number.isFinite(saved.foldMin)) foldMin = saved.foldMin
+          if (Number.isFinite(saved.areaCap)) areaCap = saved.areaCap
+          if (typeof saved.drillPath === 'string') drillPath = saved.drillPath
+          foldInput.value = String(foldMin)
+          document.getElementById('cap').value = String(areaCap)
+        }
+      } catch { /* 忽略坏数据 */ }
+    }
+  }
+  if (!drillPath) view = { x: 0, y: 0, scale: 1, center: true }
+  buildLayout()
+  draw()
+}
+
+function boot() {
+  const es = new EventSource('/api/events')
+  es.onmessage = (msg) => applyState(JSON.parse(msg.data))
+  es.onerror = () => { /* EventSource 自己会重连 */ }
+}
+boot()
+</script>
+</body>
+</html>
